@@ -7,8 +7,9 @@ from quadruped_pympc.helpers.quadruped_utils import GaitType
 
 class PeriodicGaitGenerator:
     def __init__(self, duty_factor, step_freq, gait_type: GaitType, horizon):
-        self.duty_factor = duty_factor
-        self.step_freq = step_freq
+        self._validate_parameters(duty_factor, step_freq)
+        self.duty_factor = float(duty_factor)
+        self.step_freq = float(step_freq)
         self.horizon = horizon
         self.gait_type = gait_type
         self.previous_gait_type = copy.deepcopy(gait_type)
@@ -19,6 +20,19 @@ class PeriodicGaitGenerator:
         self._phase_signal, self._init = None, None
         self.reset()
 
+    @staticmethod
+    def _validate_parameters(duty_factor, step_freq):
+        if not np.isfinite(duty_factor) or not 0.0 < duty_factor <= 1.0:
+            raise ValueError("duty_factor must be in the interval (0, 1]")
+        if not np.isfinite(step_freq) or step_freq <= 0.0:
+            raise ValueError("step_freq must be finite and positive")
+
+    def set_gait_parameters(self, duty_factor, step_freq):
+        """Update timing parameters without resetting the current gait phase."""
+        self._validate_parameters(duty_factor, step_freq)
+        self.duty_factor = float(duty_factor)
+        self.step_freq = float(step_freq)
+
     def reset(self):
         # Choose of the gait, this represent the delay of each leg
         if self.gait_type == GaitType.TROT.value:
@@ -28,8 +42,9 @@ class PeriodicGaitGenerator:
         elif self.gait_type == GaitType.BOUNDING.value:
             self.phase_offset = [0.5, 0.5, 0.0, 0.0]
         elif self.gait_type == GaitType.CRAWL.value:
-            raise NotImplementedError("Crawl gait is not implemented yet.")
-            self.phase_offset = [0.0, 0.0, 0.0, 0.0]
+            # Sequential crawl: one leg enters swing every quarter cycle.
+            # With duty_factor > 0.75, at least three legs remain in stance.
+            self.phase_offset = [0.0, 0.25, 0.5, 0.75]
         else:
             self.phase_offset = [0.0, 0.5, 0.5, 0.0]
 
@@ -211,10 +226,22 @@ if __name__ == "__main__":
         gait_type=gait_params['type'],
         horizon=horizon,
     )
-    # Predict contacts with one uniform sampling interval over the whole horizon.
-    # Rows follow FL, FR, RL, RR; each sample is 1 for stance and 0 for swing.
-    # Trim to horizon because the full-stance case returns twice as many samples.
-    contacts = generator.compute_contact_sequence([dt], [horizon])[:, :horizon]
+    # Simulate contacts with one uniform sampling interval. For a crawl, change
+    # timing while preserving phase to compare stable timing choices.
+    contacts = np.zeros((4, horizon))
+    timing_changes = {duration * 0.33: (0.92, 0.35), duration * 0.66: (0.85, 0.50)}
+    applied_timing_changes = set()
+    for sample in range(horizon):
+        current_time = sample * dt
+        for change_time, (duty_factor, step_freq) in timing_changes.items():
+            if change_time not in applied_timing_changes and current_time >= change_time:
+                generator.set_gait_parameters(duty_factor, step_freq)
+                applied_timing_changes.add(change_time)
+                print(
+                    f"t={current_time:.2f}s: duty factor={duty_factor:.2f}, "
+                    f"step frequency={step_freq:.2f} Hz"
+                )
+        contacts[:, sample] = generator.run(dt if sample else 0.0, generator.step_freq)
     # Each contact sample fills [time_edges[i], time_edges[i + 1]), so we need
     # one more edge than samples to cover the window up to exactly four seconds.
     time_edges = np.linspace(0.0, duration, horizon + 1)
@@ -238,7 +265,7 @@ if __name__ == "__main__":
     ax.set_xlim(0.0, duration)
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Foot")
-    ax.set_title(f"{gait} — {generator.step_freq:g} Hz, duty factor {generator.duty_factor:g}")
+    ax.set_title(f"{gait} — crawl timing changes preserve phase")
     # Keep the time grid behind the bars and explain the two contact states.
     ax.set_axisbelow(True)
     ax.grid(axis="x", alpha=0.3)

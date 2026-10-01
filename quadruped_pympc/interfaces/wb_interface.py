@@ -370,10 +370,15 @@ class WBInterface:
 
         # Compute Stance Torque ---------------------------------------------------------------------------
         # Exercise 2.1-2.4---------------------------
-        tau.FL = np.zeros(3)
-        tau.FR = np.zeros(3)
-        tau.RL = np.zeros(3)
-        tau.RR = np.zeros(3)
+        # The MPC GRFs and the Jacobians are both expressed in world frame.
+        # Restrict each full Jacobian to its three actuated leg-joint columns.
+        for leg_id, leg_name in enumerate(self.legs_order):
+            if self.current_contact[leg_id] == 1:
+                leg_jacobian = feet_jac[leg_name][:, legs_qvel_idx[leg_name]]
+                desired_contact_force = np.asarray(nmpc_GRFs[leg_name]).reshape(3)
+                tau[leg_name] = -leg_jacobian.T @ desired_contact_force
+            else:
+                tau[leg_name] = np.zeros(3)
         # Exercise 2.1-2.4---------------------------
 
         self.stc.update_swing_time(self.current_contact, self.legs_order, simulation_dt)

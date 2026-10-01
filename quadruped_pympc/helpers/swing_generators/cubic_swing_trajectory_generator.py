@@ -87,18 +87,22 @@ class SwingTrajectoryGenerator:
         lift_off = np.asarray(lift_off, dtype=float).reshape(3)
         touch_down = np.asarray(touch_down, dtype=float).reshape(3)
 
-        # EXERCISE 1.1-1.4---------------------------
+        if not np.all(np.isfinite(lift_off)) or not np.all(np.isfinite(touch_down)):
+            raise ValueError("lift_off and touch_down must contain finite values")
 
-
-        #--------------------------------------------
+        # Use the midpoint for horizontal motion and an absolute apex height.
+        # Never place the apex below either endpoint.
+        apex = 0.5 * (lift_off + touch_down)
+        apex[2] = max(self.step_height, lift_off[2], touch_down[2])
+        zero_velocity = np.zeros(3)
 
 
         # Both segments use exactly the same apex position and velocity.
         # At the knot itself, select the first segment (left-hand acceleration).
         if swing_time <= self.half_swing_period:
-            return swing_time, np.zeros(3), np.zeros(3), np.zeros(3), np.zeros(3)
+            return swing_time, lift_off, apex, zero_velocity, zero_velocity
         # Reset the local clock for the descending segment, without wrapping the touchdown time.
-        return swing_time - self.half_swing_period, np.zeros(3), np.zeros(3), np.zeros(3), np.zeros(3)
+        return swing_time - self.half_swing_period, apex, touch_down, zero_velocity, zero_velocity
 
     def compute_trajectory_references(
         self, swing_time: float, lift_off: np.ndarray, touch_down: np.ndarray,
@@ -121,14 +125,30 @@ class SwingTrajectoryGenerator:
         tau, q_s, q_f, q_dot_s, q_dot_f = self.compute_control_points(
             swing_time, lift_off, touch_down
         )
-        # EXERCISE 1.1-1.4 --------------
-        position = np.zeros(3)
-        velocity = np.zeros(3)
-        acceleration = np.zeros(3)
+        T = self.half_swing_period
+        normalized_time = np.clip(tau / T, 0.0, 1.0)
+        normalized_time_squared = normalized_time**2
+        normalized_time_cubed = normalized_time_squared * normalized_time
 
+        h00 = 2 * normalized_time_cubed - 3 * normalized_time_squared + 1
+        h10 = normalized_time_cubed - 2 * normalized_time_squared + normalized_time
+        h01 = -2 * normalized_time_cubed + 3 * normalized_time_squared
+        h11 = normalized_time_cubed - normalized_time_squared
+        position = h00 * q_s + h10 * T * q_dot_s + h01 * q_f + h11 * T * q_dot_f
 
+        dh00 = 6 * normalized_time_squared - 6 * normalized_time
+        dh10 = 3 * normalized_time_squared - 4 * normalized_time + 1
+        dh01 = -6 * normalized_time_squared + 6 * normalized_time
+        dh11 = 3 * normalized_time_squared - 2 * normalized_time
+        velocity = (dh00 * q_s + dh10 * T * q_dot_s
+                + dh01 * q_f + dh11 * T * q_dot_f) / T
 
-        # --------------------------------
+        d2h00 = 12 * normalized_time - 6
+        d2h10 = 6 * normalized_time - 4
+        d2h01 = -12 * normalized_time + 6
+        d2h11 = 6 * normalized_time - 2
+        acceleration = (d2h00 * q_s + d2h10 * T * q_dot_s
+                + d2h01 * q_f + d2h11 * T * q_dot_f) / T**2
 
         # C1 continuity does not require matching vertical acceleration at the
         # apex: with equal half durations, it matches only for equal endpoint z.

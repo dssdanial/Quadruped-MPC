@@ -88,13 +88,23 @@ class SwingTrajectoryController:
         err_vel = des_foot_vel - foot_vel
         err_vel = err_vel.reshape((3,))
 
-        gravity_and_coriolis = h
+        gravity_and_coriolis = np.asarray(h, dtype=float).reshape(3)
+        jacobian = np.asarray(J, dtype=float).reshape(3, 3)
 
-        # Exercise 1.5 - 1.7: Implement the swing controller in Cartesian space using PD feedback, and one with gravity compensation.
-        tau_swing = np.zeros(3)
-        des_foot_pos = np.zeros(3)
-        des_foot_vel = np.zeros(3)
-        # -----------------------------------------------
+        # Cartesian PD control: tau = J^T (Kp * position_error + Kd * velocity_error).
+        cartesian_wrench = (
+            np.asarray(self.position_gain_fb, dtype=float) * err_pos
+            + np.asarray(self.velocity_gain_fb, dtype=float) * err_vel
+        )
+        tau_swing = jacobian.T @ cartesian_wrench
+
+        # Add the measured gravity/Coriolis/centrifugal bias for smoother
+        # tracking and substantially less steady-state effort.
+        if self.use_feedback_linearization:
+            tau_swing += gravity_and_coriolis
+
+        des_foot_pos = des_foot_pos.reshape(3)
+        des_foot_vel = des_foot_vel.reshape(3)
 
 
         return tau_swing, des_foot_pos, des_foot_vel
@@ -208,7 +218,7 @@ if __name__ == "__main__":
     # Translate into coordinates relative to the initial foot: the explicit
     # generator uses step_height as an absolute z control-point coordinate.
     controller = SwingTrajectoryController(
-        step_height, swing_period, np.full(3, 400.0), np.full(3, 40.0), generator
+        step_height, swing_period, np.full(3, 400.0), np.full(3, 12.0), generator
     )
     # Sample the same generator used by the controller to display its spatial curve.
     # Position, velocity and acceleration references are recomputed during control.
@@ -216,6 +226,12 @@ if __name__ == "__main__":
         controller.swing_generator.compute_trajectory_references(t, lift_off, touch_down)[0].reshape(3)
         + foot_origin for t in np.linspace(0.0, swing_period, 80)
     ])
+    touchdown_reference = controller.swing_generator.compute_trajectory_references(
+        swing_period, lift_off, touch_down
+    )
+    touchdown_velocity = touchdown_reference[1]
+    print(f"Reference touchdown velocity: {touchdown_velocity} m/s")
+    print(f"Reference touchdown speed: {np.linalg.norm(touchdown_velocity):.3e} m/s")
     jacobian = np.zeros((3, model.nv))
     mass = np.zeros((model.nv, model.nv))
     mujoco.mj_jacGeom(model, data, jacobian, None, foot_id)
